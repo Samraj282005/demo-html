@@ -14,22 +14,22 @@ pipeline {
         IMAGE_NAME     = 'demo-html'
         CONTAINER_NAME = 'demo-html-container'
         HOST_PORT      = '8081'
+
+        // Must exactly match the SonarQube server Name
+        // configured in Manage Jenkins > System.
+        SONAR_SERVER = 'SonarQube-Docker'
     }
 
     stages {
 
-        // 1. Checkout source code from GitHub
         stage('Checkout') {
             steps {
                 echo 'Checking out source code from GitHub'
-
                 checkout scm
-
                 sh 'ls -la'
             }
         }
 
-        // 2. Validate HTML project
         stage('Build HTML Project') {
             steps {
                 echo 'Validating HTML project'
@@ -37,19 +37,17 @@ pipeline {
                 sh '''
                     test -f Dockerfile
                     test -f anchor.html
-
                     echo "HTML project validation successful"
                 '''
             }
         }
 
-        // 3. SonarQube code analysis
         stage('SonarQube Analysis') {
             steps {
                 script {
                     def scannerHome = tool 'SonarScanner'
 
-                    withSonarQubeEnv('SonarQube-Docker') {
+                    withSonarQubeEnv("${SONAR_SERVER}") {
                         sh """
                             ${scannerHome}/bin/sonar-scanner \
                             -Dsonar.projectKey=demo-html \
@@ -64,7 +62,6 @@ pipeline {
             }
         }
 
-        // 4. Wait for SonarQube Quality Gate
         stage('Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
@@ -79,7 +76,6 @@ pipeline {
             }
         }
 
-        // 5. Build Docker image
         stage('Build Docker Image') {
             steps {
                 echo 'Building Docker image'
@@ -89,24 +85,18 @@ pipeline {
                     -t ${IMAGE_NAME}:${BUILD_NUMBER} \
                     -t ${IMAGE_NAME}:latest .
                 """
-
-                echo 'Docker image created successfully'
             }
         }
 
-        // 6. Check Docker image
         stage('Verify Docker Image') {
             steps {
-                sh """
-                    docker images ${IMAGE_NAME}
-                """
+                sh 'docker images demo-html'
             }
         }
 
-        // 7. Deploy container on AWS EC2
         stage('Deploy Docker Container') {
             steps {
-                echo 'Deploying website on AWS EC2'
+                echo 'Deploying Docker container on AWS EC2'
 
                 sh """
                     docker rm -f ${CONTAINER_NAME} || true
@@ -120,21 +110,14 @@ pipeline {
             }
         }
 
-        // 8. Verify deployment
         stage('Verify Deployment') {
             steps {
                 sh """
                     sleep 5
-
                     docker ps
-
                     docker port ${CONTAINER_NAME}
-
-                    docker exec ${CONTAINER_NAME} \
-                    wget -qO- http://127.0.0.1/
+                    curl -f http://localhost:${HOST_PORT}/
                 """
-
-                echo 'Website deployment verified successfully'
             }
         }
     }
@@ -142,22 +125,26 @@ pipeline {
     post {
         success {
             echo '''
-            ==========================================
-              PIPELINE COMPLETED SUCCESSFULLY
-              SonarQube Analysis: Passed
-              Docker Image: Created
-              Container: Deployed
-              Website Port: 8081
-            ==========================================
+            ====================================
+                PIPELINE SUCCESSFUL
+            ====================================
+                GitHub Checkout : SUCCESS
+                HTML Validation: SUCCESS
+                SonarQube       : SUCCESS
+                Quality Gate    : PASSED
+                Docker Build    : SUCCESS
+                Docker Deploy   : SUCCESS
+                Website Port    : 8081
+            ====================================
             '''
         }
 
         failure {
-            echo 'Pipeline failed. Check the Jenkins console output.'
+            echo 'Pipeline failed. Check Jenkins Console Output.'
         }
 
         always {
-            echo 'Jenkins pipeline execution completed.'
+            echo 'Pipeline execution completed.'
         }
     }
 }
