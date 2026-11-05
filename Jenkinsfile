@@ -25,7 +25,7 @@ pipeline {
             }
         }
 
-        // 2. Display workspace information
+        // 2. Workspace information
         stage('Workspace Information') {
             steps {
                 sh '''
@@ -41,7 +41,7 @@ pipeline {
             }
         }
 
-        // 3. Validate HTML project
+        // 3. HTML project validation
         stage('Build HTML Project') {
             steps {
                 script {
@@ -66,7 +66,7 @@ pipeline {
             }
         }
 
-        // 4. SonarQube code analysis
+        // 4. SonarQube analysis
         stage('SonarQube Analysis') {
             steps {
                 catchError(
@@ -80,7 +80,6 @@ pipeline {
                         def scannerHome = tool 'SonarScanner'
 
                         withSonarQubeEnv('SonarQube-Docker') {
-
                             sh """
                                 ${scannerHome}/bin/sonar-scanner \
                                 -Dsonar.projectKey=demo-html \
@@ -115,14 +114,15 @@ pipeline {
                     message: 'SonarQube Quality Gate failed. Continuing pipeline.'
                 ) {
                     timeout(time: 5, unit: 'MINUTES') {
+                        script {
+                            echo 'Waiting for SonarQube Quality Gate result'
 
-                        echo 'Waiting for SonarQube Quality Gate result'
+                            def qualityGate = waitForQualityGate(
+                                abortPipeline: true
+                            )
 
-                        def qualityGate = waitForQualityGate(
-                            abortPipeline: true
-                        )
-
-                        echo "SonarQube Quality Gate: ${qualityGate.status}"
+                            echo "SonarQube Quality Gate: ${qualityGate.status}"
+                        }
                     }
                 }
             }
