@@ -1,47 +1,59 @@
+
 pipeline {
     agent any
 
-    tools {
-        git 'Default'
+    options {
+        timestamps()
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
     }
 
     environment {
-        SONARQUBE_ENV = 'SonarQube'
+        SONARQUBE_SERVER = 'sonar-qube'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
+                echo 'Checking out source code from GitHub SCM'
+
                 checkout scm
+
+                echo 'GitHub checkout completed successfully'
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Workspace Information') {
             steps {
-                script {
-                    if (fileExists('package.json')) {
-                        sh 'npm install'
-                    } else {
-                        echo 'No package.json found. Skipping dependency installation.'
-                    }
-                }
+                sh '''
+                    echo "Current workspace:"
+                    pwd
+
+                    echo "Repository files:"
+                    ls -la
+                '''
             }
         }
 
-        stage('Build') {
+        stage('Build HTML Project') {
             steps {
                 script {
+                    echo 'Building Demo-html project'
+
                     if (fileExists('package.json')) {
                         sh '''
+                            npm install
+
                             if npm run | grep -q "build"; then
                                 npm run build
                             else
-                                echo "No build script found. Skipping build."
+                                echo "No build script found. Skipping npm build."
                             fi
                         '''
                     } else {
-                        echo 'Static HTML project detected. Skipping build.'
+                        echo 'Static HTML project detected.'
+                        echo 'No additional build required.'
                     }
                 }
             }
@@ -50,13 +62,17 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 script {
-                    catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
-                        withSonarQubeEnv('SonarQube') {
+                    catchError(
+                        buildResult: 'SUCCESS',
+                        stageResult: 'SUCCESS'
+                    ) {
+                        withSonarQubeEnv('sonar-qube') {
                             sh '''
                                 if command -v sonar-scanner >/dev/null 2>&1; then
                                     sonar-scanner
                                 else
-                                    echo "SonarScanner not installed. Skipping analysis."
+                                    echo "SonarScanner not installed."
+                                    echo "Skipping SonarQube analysis."
                                 fi
                             '''
                         }
@@ -68,29 +84,38 @@ pipeline {
         stage('SonarQube Quality Gate') {
             steps {
                 script {
-                    catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    catchError(
+                        buildResult: 'SUCCESS',
+                        stageResult: 'SUCCESS'
+                    ) {
                         timeout(time: 2, unit: 'MINUTES') {
-                            waitForQualityGate abortPipeline: true
+                            waitForQualityGate(
+                                abortPipeline: true
+                            )
                         }
                     }
                 }
             }
         }
 
-        stage('Deploy') {
+        stage('Deployment Preparation') {
             steps {
-                echo 'Deployment stage completed.'
+                echo 'Preparing HTML project for deployment'
+
+                sh '''
+                    echo "Deployment preparation completed."
+                '''
             }
         }
     }
 
     post {
         success {
-            echo 'Pipeline completed successfully!'
+            echo 'Demo-html pipeline completed successfully!'
         }
 
         failure {
-            echo 'Pipeline failed due to a non-SonarQube issue.'
+            echo 'Pipeline failed due to a checkout, build, or other non-ignored error.'
         }
 
         always {
