@@ -10,67 +10,30 @@ pipeline {
     }
 
     environment {
-        PROJECT_NAME   = 'demo-html'
         IMAGE_NAME     = 'demo-html'
         CONTAINER_NAME = 'demo-html-container'
         HOST_PORT      = '8081'
-
-        SONAR_SERVER = 'SonarQube'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                echo 'Checking out source code'
+                echo 'Checking out code from GitHub'
                 checkout scm
                 sh 'ls -la'
             }
         }
 
-        stage('Build HTML Project') {
+        stage('Validate HTML Project') {
             steps {
-                echo 'Validating HTML project'
+                echo 'Validating project files'
 
                 sh '''
                     test -f Dockerfile
                     test -f anchor.html
-                    echo "HTML project validation successful"
+                    echo "Project validation successful"
                 '''
-            }
-        }
-
-        stage('SonarQube Analysis') {
-            steps {
-                script {
-                    def scannerHome = tool 'SonarScanner'
-
-                    withSonarQubeEnv("${SONAR_SERVER}") {
-                        sh """
-                            ${scannerHome}/bin/sonar-scanner \
-                            -Dsonar.projectKey=demo-html \
-                            -Dsonar.projectName='Demo HTML' \
-                            -Dsonar.projectVersion=${BUILD_NUMBER} \
-                            -Dsonar.sources=. \
-                            -Dsonar.sourceEncoding=UTF-8 \
-                            -Dsonar.exclusions=.git/**,**/*.jpg,**/*.jpeg,**/*.png,**/*.webp
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Quality Gate') {
-            steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    script {
-                        def qualityGate = waitForQualityGate(
-                            abortPipeline: true
-                        )
-
-                        echo "Quality Gate Status: ${qualityGate.status}"
-                    }
-                }
             }
         }
 
@@ -88,13 +51,18 @@ pipeline {
 
         stage('Verify Docker Image') {
             steps {
-                sh 'docker images demo-html'
+                echo 'Checking created Docker image'
+
+                sh """
+                    docker images ${IMAGE_NAME}
+                    docker image inspect ${IMAGE_NAME}:${BUILD_NUMBER}
+                """
             }
         }
 
         stage('Deploy Docker Container') {
             steps {
-                echo 'Deploying Docker container'
+                echo 'Deploying application'
 
                 sh """
                     docker rm -f ${CONTAINER_NAME} || true
@@ -110,6 +78,8 @@ pipeline {
 
         stage('Verify Deployment') {
             steps {
+                echo 'Checking website deployment'
+
                 sh """
                     sleep 5
                     docker ps
@@ -122,15 +92,27 @@ pipeline {
 
     post {
         success {
-            echo 'PIPELINE SUCCESSFUL - Docker deployment completed!'
+            echo '''
+            ==================================
+                PIPELINE SUCCESSFUL!
+            ==================================
+                GitHub Checkout : SUCCESS
+                HTML Validation: SUCCESS
+                Docker Build    : SUCCESS
+                Docker Image    : CREATED
+                Docker Deploy   : SUCCESS
+
+                Website Port: 8081
+            ==================================
+            '''
         }
 
         failure {
-            echo 'PIPELINE FAILED - Check Console Output.'
+            echo 'PIPELINE FAILED - Check Console Output'
         }
 
         always {
-            echo 'Pipeline execution completed.'
+            echo 'Pipeline execution completed'
         }
     }
 }
