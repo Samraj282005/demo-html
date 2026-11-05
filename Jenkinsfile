@@ -6,157 +6,158 @@ pipeline {
         timestamps()
         skipDefaultCheckout(true)
         disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
     }
 
     environment {
-        SONAR_ANALYSIS_SUBMITTED = 'false'
+        PROJECT_NAME   = 'demo-html'
+        IMAGE_NAME     = 'demo-html'
+        CONTAINER_NAME = 'demo-html-container'
+        HOST_PORT      = '8081'
     }
 
     stages {
 
-        // 1. Checkout source code
+        // 1. Checkout source code from GitHub
         stage('Checkout') {
             steps {
-                echo 'Checking out source code from GitHub SCM'
+                echo 'Checking out source code from GitHub'
 
                 checkout scm
 
-                echo 'GitHub checkout completed successfully'
+                sh 'ls -la'
             }
         }
 
-        // 2. Workspace information
-        stage('Workspace Information') {
-            steps {
-                sh '''
-                    echo "Current workspace:"
-                    pwd
-
-                    echo "Repository files:"
-                    ls -la
-
-                    echo "Git commit:"
-                    git rev-parse --short HEAD
-                '''
-            }
-        }
-
-        // 3. HTML project validation
+        // 2. Validate HTML project
         stage('Build HTML Project') {
             steps {
-                script {
-                    echo 'Building Demo-html project'
-
-                    sh '''
-                        set -eu
-
-                        echo "Checking HTML files..."
-
-                        if ! find . -maxdepth 1 -type f -name "*.html" | grep -q .; then
-                            echo "ERROR: No HTML files found!"
-                            exit 1
-                        fi
-
-                        echo "HTML files detected:"
-                        find . -maxdepth 1 -type f -name "*.html" -print
-
-                        echo "Static HTML project validation completed."
-                    '''
-                }
-            }
-        }
-
-        // 4. SonarQube analysis
-        stage('SonarQube Analysis') {
-            steps {
-                catchError(
-                    buildResult: 'SUCCESS',
-                    stageResult: 'UNSTABLE',
-                    message: 'SonarQube analysis failed. Continuing pipeline.'
-                ) {
-                    script {
-                        echo 'Starting SonarQube code analysis'
-
-                        def scannerHome = tool 'SonarScanner'
-
-                        withSonarQubeEnv('SonarQube-Docker') {
-                            sh """
-                                ${scannerHome}/bin/sonar-scanner \
-                                -Dsonar.projectKey=demo-html \
-                                -Dsonar.projectName='Demo HTML' \
-                                -Dsonar.projectVersion=1.0 \
-                                -Dsonar.sources=. \
-                                -Dsonar.sourceEncoding=UTF-8 \
-                                -Dsonar.exclusions=.git/**,**/*.jpg,**/*.jpeg,**/*.png,**/*.webp
-                            """
-                        }
-
-                        env.SONAR_ANALYSIS_SUBMITTED = 'true'
-
-                        echo 'SonarQube analysis submitted successfully'
-                    }
-                }
-            }
-        }
-
-        // 5. SonarQube Quality Gate
-        stage('SonarQube Quality Gate') {
-            when {
-                expression {
-                    env.SONAR_ANALYSIS_SUBMITTED == 'true'
-                }
-            }
-
-            steps {
-                catchError(
-                    buildResult: 'SUCCESS',
-                    stageResult: 'UNSTABLE',
-                    message: 'SonarQube Quality Gate failed. Continuing pipeline.'
-                ) {
-                    timeout(time: 5, unit: 'MINUTES') {
-                        script {
-                            echo 'Waiting for SonarQube Quality Gate result'
-
-                            def qualityGate = waitForQualityGate(
-                                abortPipeline: true
-                            )
-
-                            echo "SonarQube Quality Gate: ${qualityGate.status}"
-                        }
-                    }
-                }
-            }
-        }
-
-        // 6. Deployment preparation
-        stage('Deployment Preparation') {
-            steps {
-                echo 'Preparing HTML project for deployment'
+                echo 'Validating HTML project'
 
                 sh '''
-                    echo "Deployment preparation completed."
-                    echo "HTML project is ready."
+                    test -f Dockerfile
+                    test -f anchor.html
+
+                    echo "HTML project validation successful"
                 '''
+            }
+        }
+
+        // 3. SonarQube code analysis
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner'
+
+                    withSonarQubeEnv('SonarQube-Docker') {
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                            -Dsonar.projectKey=demo-html \
+                            -Dsonar.projectName='Demo HTML' \
+                            -Dsonar.projectVersion=${BUILD_NUMBER} \
+                            -Dsonar.sources=. \
+                            -Dsonar.sourceEncoding=UTF-8 \
+                            -Dsonar.exclusions=.git/**,**/*.jpg,**/*.jpeg,**/*.png,**/*.webp
+                        """
+                    }
+                }
+            }
+        }
+
+        // 4. Wait for SonarQube Quality Gate
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    script {
+                        def qualityGate = waitForQualityGate(
+                            abortPipeline: true
+                        )
+
+                        echo "Quality Gate Status: ${qualityGate.status}"
+                    }
+                }
+            }
+        }
+
+        // 5. Build Docker image
+        stage('Build Docker Image') {
+            steps {
+                echo 'Building Docker image'
+
+                sh """
+                    docker build \
+                    -t ${IMAGE_NAME}:${BUILD_NUMBER} \
+                    -t ${IMAGE_NAME}:latest .
+                """
+
+                echo 'Docker image created successfully'
+            }
+        }
+
+        // 6. Check Docker image
+        stage('Verify Docker Image') {
+            steps {
+                sh """
+                    docker images ${IMAGE_NAME}
+                """
+            }
+        }
+
+        // 7. Deploy container on AWS EC2
+        stage('Deploy Docker Container') {
+            steps {
+                echo 'Deploying website on AWS EC2'
+
+                sh """
+                    docker rm -f ${CONTAINER_NAME} || true
+
+                    docker run -d \
+                    --name ${CONTAINER_NAME} \
+                    --restart unless-stopped \
+                    -p ${HOST_PORT}:80 \
+                    ${IMAGE_NAME}:${BUILD_NUMBER}
+                """
+            }
+        }
+
+        // 8. Verify deployment
+        stage('Verify Deployment') {
+            steps {
+                sh """
+                    sleep 5
+
+                    docker ps
+
+                    docker port ${CONTAINER_NAME}
+
+                    docker exec ${CONTAINER_NAME} \
+                    wget -qO- http://127.0.0.1/
+                """
+
+                echo 'Website deployment verified successfully'
             }
         }
     }
 
     post {
         success {
-            echo 'Demo-html pipeline completed successfully!'
-        }
-
-        unstable {
-            echo 'Pipeline completed with warnings. Check SonarQube stages.'
+            echo '''
+            ==========================================
+              PIPELINE COMPLETED SUCCESSFULLY
+              SonarQube Analysis: Passed
+              Docker Image: Created
+              Container: Deployed
+              Website Port: 8081
+            ==========================================
+            '''
         }
 
         failure {
-            echo 'Pipeline failed. Check Jenkins console output.'
+            echo 'Pipeline failed. Check the Jenkins console output.'
         }
 
         always {
-            echo 'Jenkins pipeline execution finished.'
-            echo "Final build result: ${currentBuild.currentResult}"
+            echo 'Jenkins pipeline execution completed.'
         }
     }
 }
