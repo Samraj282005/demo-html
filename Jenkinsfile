@@ -15,16 +15,14 @@ pipeline {
         CONTAINER_NAME = 'demo-html-container'
         HOST_PORT      = '8081'
 
-        // Must exactly match the SonarQube server Name
-        // configured in Manage Jenkins > System.
-        SONAR_SERVER = 'SonarQube-Docker'
+        SONAR_SERVER = 'SonarQube'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                echo 'Checking out source code from GitHub'
+                echo 'Checking out source code'
                 checkout scm
                 sh 'ls -la'
             }
@@ -96,7 +94,7 @@ pipeline {
 
         stage('Deploy Docker Container') {
             steps {
-                echo 'Deploying Docker container on AWS EC2'
+                echo 'Deploying Docker container'
 
                 sh """
                     docker rm -f ${CONTAINER_NAME} || true
@@ -124,23 +122,11 @@ pipeline {
 
     post {
         success {
-            echo '''
-            ====================================
-                PIPELINE SUCCESSFUL
-            ====================================
-                GitHub Checkout : SUCCESS
-                HTML Validation: SUCCESS
-                SonarQube       : SUCCESS
-                Quality Gate    : PASSED
-                Docker Build    : SUCCESS
-                Docker Deploy   : SUCCESS
-                Website Port    : 8081
-            ====================================
-            '''
+            echo 'PIPELINE SUCCESSFUL - Docker deployment completed!'
         }
 
         failure {
-            echo 'Pipeline failed. Check Jenkins Console Output.'
+            echo 'PIPELINE FAILED - Check Console Output.'
         }
 
         always {
