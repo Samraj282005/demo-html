@@ -6,41 +6,52 @@ pipeline {
         timestamps()
         skipDefaultCheckout(true)
         disableConcurrentBuilds()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
     }
 
     environment {
-        IMAGE_NAME     = 'demo-html'
-        CONTAINER_NAME = 'demo-html-container'
-        HOST_PORT      = '8081'
+        AWS_REGION       = 'ap-south-1'
+        AWS_ACCOUNT_ID   = 'YOUR_AWS_ACCOUNT_ID'
+        ECR_REPOSITORY   = 'demo-html'
+        ECS_CLUSTER      = 'YOUR_ECS_CLUSTER'
+        ECS_SERVICE      = 'YOUR_ECS_SERVICE'
+
+        IMAGE_NAME       = 'demo-html'
+        SONAR_SERVER     = 'SonarQube'
+        SONAR_SCANNER    = 'SonarQubeScanner'
     }
 
     stages {
 
-        stage('Checkout') {
+        stage('GitHub Checkout') {
             steps {
-                echo 'Checking out code from GitHub'
                 checkout scm
                 sh 'ls -la'
             }
         }
 
-        stage('Validate HTML Project') {
+        // SonarQube analysis: record failure, continue pipeline
+        stage('SonarQube Analysis') {
             steps {
-                echo 'Validating project files'
+                catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                    script {
+                        def scannerHome = tool "${SONAR_SCANNER}"
 
-                sh '''
-                    test -f Dockerfile
-                    test -f anchor.html
-                    echo "Project validation successful"
-                '''
+                        withSonarQubeEnv("${SONAR_SERVER}") {
+                            sh """
+                                ${scannerHome}/bin/sonar-scanner \
+                                -Dsonar.projectKey=demo-html \
+                                -Dsonar.sources=. \
+                                -Dsonar.exclusions=.git/**,trivy-report.html
+                            """
+                        }
+                    }
+                }
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Docker Build') {
             steps {
-                echo 'Building Docker image'
-
                 sh """
                     docker build \
                     -t ${IMAGE_NAME}:${BUILD_NUMBER} \
@@ -49,70 +60,80 @@ pipeline {
             }
         }
 
-        stage('Verify Docker Image') {
+        // Trivy generates report; vulnerabilities do not stop pipeline
+        stage('Trivy Security Scan') {
             steps {
-                echo 'Checking created Docker image'
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    sh """
+                        docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v trivy-cache:/root/.cache/ \
+                        -v "\$WORKSPACE:/report" \
+                        aquasec/trivy:latest image \
+                        --image-src docker \
+                        --scanners vuln \
+                        --severity HIGH,CRITICAL \
+                        --format template \
+                        --template "@contrib/html.tpl" \
+                        --output /report/trivy-report.html \
+                        ${IMAGE_NAME}:${BUILD_NUMBER}
+                    """
+                }
+            }
+        }
+
+        stage('Push to Amazon ECR') {
+            steps {
+                sh """
+                    aws ecr get-login-password \
+                    --region ${AWS_REGION} | \
+                    docker login \
+                    --username AWS \
+                    --password-stdin \
+                    ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                """
 
                 sh """
-                    docker images ${IMAGE_NAME}
-                    docker image inspect ${IMAGE_NAME}:${BUILD_NUMBER}
+                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} \
+                    ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${BUILD_NUMBER}
+
+                    docker push \
+                    ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${BUILD_NUMBER}
                 """
             }
         }
 
-        stage('Deploy Docker Container') {
+        stage('Deploy to Amazon ECS') {
             steps {
-                echo 'Deploying application'
-
                 sh """
-                    docker rm -f ${CONTAINER_NAME} || true
+                    aws ecs update-service \
+                    --cluster ${ECS_CLUSTER} \
+                    --service ${ECS_SERVICE} \
+                    --force-new-deployment \
+                    --region ${AWS_REGION}
 
-                    docker run -d \
-                    --name ${CONTAINER_NAME} \
-                    --restart unless-stopped \
-                    -p ${HOST_PORT}:80 \
-                    ${IMAGE_NAME}:${BUILD_NUMBER}
-                """
-            }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                echo 'Checking website deployment'
-
-                sh """
-                    sleep 5
-                    docker ps
-                    docker port ${CONTAINER_NAME}
-                    curl -f http://localhost:${HOST_PORT}/
+                    aws ecs wait services-stable \
+                    --cluster ${ECS_CLUSTER} \
+                    --services ${ECS_SERVICE} \
+                    --region ${AWS_REGION}
                 """
             }
         }
     }
 
     post {
-        success {
-            echo '''
-            ==================================
-                PIPELINE SUCCESSFUL!
-            ==================================
-                GitHub Checkout : SUCCESS
-                HTML Validation: SUCCESS
-                Docker Build    : SUCCESS
-                Docker Image    : CREATED
-                Docker Deploy   : SUCCESS
+        always {
+            archiveArtifacts artifacts: 'trivy-report.html',
+                             allowEmptyArchive: true
+            echo 'Pipeline execution completed'
+        }
 
-                Website Port: 8081
-            ==================================
-            '''
+        success {
+            echo 'Pipeline completed successfully'
         }
 
         failure {
-            echo 'PIPELINE FAILED - Check Console Output'
-        }
-
-        always {
-            echo 'Pipeline execution completed'
+            echo 'A required pipeline stage failed. Check Console Output.'
         }
     }
 }
