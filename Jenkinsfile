@@ -19,6 +19,7 @@ pipeline {
 
     stages {
 
+        // 1. GitHub Checkout
         stage('Git Checkout') {
             steps {
                 git branch: 'main',
@@ -27,18 +28,21 @@ pipeline {
             }
         }
 
+        // 2. Install Node.js Dependencies
         stage('Install Dependencies') {
             steps {
                 sh 'npm install'
             }
         }
 
+        // 3. Build Application
         stage('Build') {
             steps {
                 sh 'npm run build'
             }
         }
 
+        // 4. SonarQube Code Analysis
         stage('SonarQube Code Analysis') {
             steps {
                 withSonarQubeEnv('SonarQube') {
@@ -58,6 +62,7 @@ pipeline {
             }
         }
 
+        // 5. SonarQube Quality Gate
         stage('Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
@@ -66,6 +71,7 @@ pipeline {
             }
         }
 
+        // 6. Docker Image Build
         stage('Docker Build') {
             steps {
                 sh '''
@@ -74,12 +80,14 @@ pipeline {
             }
         }
 
+        // 7. Display Docker Images
         stage('Docker Images') {
             steps {
                 sh 'docker images'
             }
         }
 
+        // 8. Trivy Security Scan
         stage('Trivy Security Scan') {
             steps {
                 sh '''
@@ -93,11 +101,13 @@ pipeline {
             }
         }
 
+        // 9. Push Docker Image to Amazon ECR
         stage('Push to Amazon ECR') {
             steps {
                 sh '''
-                    echo "Authenticating with AWS..."
+                    set -e
 
+                    echo "Checking AWS IAM role..."
                     aws sts get-caller-identity
 
                     echo "Logging in to Amazon ECR..."
@@ -123,6 +133,7 @@ pipeline {
         }
     }
 
+    // Post Build Actions
     post {
         success {
             echo 'Pipeline completed successfully! Docker image pushed to Amazon ECR.'
@@ -130,6 +141,10 @@ pipeline {
 
         failure {
             echo 'Pipeline failed. Please check the Console Output.'
+        }
+
+        always {
+            echo 'Jenkins pipeline execution completed.'
         }
     }
 }
