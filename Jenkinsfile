@@ -2,138 +2,134 @@
 pipeline {
     agent any
 
-    options {
-        timestamps()
-        skipDefaultCheckout(true)
-        disableConcurrentBuilds()
-        timeout(time: 45, unit: 'MINUTES')
+    tools {
+        nodejs 'NodeJS 26.x'
     }
 
     environment {
-        AWS_REGION       = 'ap-south-1'
-        AWS_ACCOUNT_ID   = 'YOUR_AWS_ACCOUNT_ID'
-        ECR_REPOSITORY   = 'demo-html'
-        ECS_CLUSTER      = 'YOUR_ECS_CLUSTER'
-        ECS_SERVICE      = 'YOUR_ECS_SERVICE'
+        AWS_REGION = 'ap-south-1'
+        AWS_ACCOUNT_ID = '054022771060'
+        ECR_REPOSITORY = 'sample/html1'
+        REGISTRY = '054022771060.dkr.ecr.ap-south-1.amazonaws.com'
 
-        IMAGE_NAME       = 'demo-html'
-        SONAR_SERVER     = 'SonarQube'
-        SONAR_SCANNER    = 'SonarQubeScanner'
+        LOCAL_IMAGE = 'sports-web:latest'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        ECR_IMAGE = "${REGISTRY}/sample/html1:${BUILD_NUMBER}"
     }
 
     stages {
 
-        stage('GitHub Checkout') {
+        stage('Git Checkout') {
             steps {
-                checkout scm
-                sh 'ls -la'
+                git branch: 'main',
+                    credentialsId: 'github-token',
+                    url: 'https://github.com/Samraj282005/Sports-Web.git'
             }
         }
 
-        // SonarQube analysis: record failure, continue pipeline
-        stage('SonarQube Analysis') {
+        stage('Install Dependencies') {
             steps {
-                catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
-                    script {
-                        def scannerHome = tool "${SONAR_SCANNER}"
+                sh 'npm install'
+            }
+        }
 
-                        withSonarQubeEnv("${SONAR_SERVER}") {
-                            sh """
-                                ${scannerHome}/bin/sonar-scanner \
-                                -Dsonar.projectKey=demo-html \
-                                -Dsonar.sources=. \
-                                -Dsonar.exclusions=.git/**,trivy-report.html
-                            """
-                        }
+        stage('Build') {
+            steps {
+                sh 'npm run build'
+            }
+        }
+
+        stage('SonarQube Code Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    script {
+                        def scannerHome = tool 'SonarScanner'
+
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                            -Dsonar.projectKey=Sports-Web \
+                            -Dsonar.projectName=Sports-Web \
+                            -Dsonar.sources=src \
+                            -Dsonar.exclusions=node_modules/**,dist/**,build/** \
+                            -Dsonar.sourceEncoding=UTF-8
+                        """
                     }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
         stage('Docker Build') {
             steps {
-                sh """
-                    docker build \
-                    -t ${IMAGE_NAME}:${BUILD_NUMBER} \
-                    -t ${IMAGE_NAME}:latest .
-                """
+                sh '''
+                    docker build -t "$LOCAL_IMAGE" .
+                '''
             }
         }
 
-        // Trivy generates report; vulnerabilities do not stop pipeline
+        stage('Docker Images') {
+            steps {
+                sh 'docker images'
+            }
+        }
+
         stage('Trivy Security Scan') {
             steps {
-                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                    sh """
-                        docker run --rm \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v trivy-cache:/root/.cache/ \
-                        -v "\$WORKSPACE:/report" \
-                        aquasec/trivy:latest image \
-                        --image-src docker \
-                        --scanners vuln \
+                sh '''
+                    echo "Scanning Docker image with Trivy..."
+
+                    trivy image \
+                        --exit-code 1 \
                         --severity HIGH,CRITICAL \
-                        --format template \
-                        --template "@contrib/html.tpl" \
-                        --output /report/trivy-report.html \
-                        ${IMAGE_NAME}:${BUILD_NUMBER}
-                    """
-                }
+                        "$LOCAL_IMAGE"
+                '''
             }
         }
 
         stage('Push to Amazon ECR') {
             steps {
-                sh """
+                sh '''
+                    echo "Authenticating with AWS..."
+
+                    aws sts get-caller-identity
+
+                    echo "Logging in to Amazon ECR..."
+
                     aws ecr get-login-password \
-                    --region ${AWS_REGION} | \
-                    docker login \
-                    --username AWS \
-                    --password-stdin \
-                    ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-                """
+                        --region "$AWS_REGION" | \
+                        docker login \
+                        --username AWS \
+                        --password-stdin "$REGISTRY"
 
-                sh """
-                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} \
-                    ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${BUILD_NUMBER}
+                    echo "Tagging Docker image..."
 
-                    docker push \
-                    ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${BUILD_NUMBER}
-                """
-            }
-        }
+                    docker tag "$LOCAL_IMAGE" "$ECR_IMAGE"
 
-        stage('Deploy to Amazon ECS') {
-            steps {
-                sh """
-                    aws ecs update-service \
-                    --cluster ${ECS_CLUSTER} \
-                    --service ${ECS_SERVICE} \
-                    --force-new-deployment \
-                    --region ${AWS_REGION}
+                    echo "Pushing Docker image to ECR..."
 
-                    aws ecs wait services-stable \
-                    --cluster ${ECS_CLUSTER} \
-                    --services ${ECS_SERVICE} \
-                    --region ${AWS_REGION}
-                """
+                    docker push "$ECR_IMAGE"
+
+                    echo "Successfully pushed image:"
+                    echo "$ECR_IMAGE"
+                '''
             }
         }
     }
 
     post {
-        always {
-            archiveArtifacts artifacts: 'trivy-report.html',
-                             allowEmptyArchive: true
-            echo 'Pipeline execution completed'
-        }
-
         success {
-            echo 'Pipeline completed successfully'
+            echo 'Pipeline completed successfully! Docker image pushed to Amazon ECR.'
         }
 
         failure {
-            echo 'A required pipeline stage failed. Check Console Output.'
+            echo 'Pipeline failed. Please check the Console Output.'
         }
     }
 }
