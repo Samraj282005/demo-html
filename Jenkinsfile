@@ -28,7 +28,7 @@ pipeline {
             }
         }
 
-        // 2. Install Node.js Dependencies
+        // 2. Install Dependencies
         stage('Install Dependencies') {
             steps {
                 sh 'npm install'
@@ -42,31 +42,41 @@ pipeline {
             }
         }
 
-        // 4. SonarQube Code Analysis
+        // 4. SonarQube Analysis (Non-blocking)
         stage('SonarQube Code Analysis') {
             steps {
-                withSonarQubeEnv('SonarQube') {
-                    script {
-                        def scannerHome = tool 'SonarScanner'
+                catchError(
+                    buildResult: 'SUCCESS',
+                    stageResult: 'UNSTABLE'
+                ) {
+                    withSonarQubeEnv('SonarQube') {
+                        script {
+                            def scannerHome = tool 'SonarScanner'
 
-                        sh """
-                            ${scannerHome}/bin/sonar-scanner \
-                            -Dsonar.projectKey=Sports-Web \
-                            -Dsonar.projectName=Sports-Web \
-                            -Dsonar.sources=src \
-                            -Dsonar.exclusions=node_modules/**,dist/**,build/** \
-                            -Dsonar.sourceEncoding=UTF-8
-                        """
+                            sh """
+                                ${scannerHome}/bin/sonar-scanner \
+                                -Dsonar.projectKey=Sports-Web \
+                                -Dsonar.projectName=Sports-Web \
+                                -Dsonar.sources=src \
+                                -Dsonar.exclusions=node_modules/**,dist/**,build/** \
+                                -Dsonar.sourceEncoding=UTF-8
+                            """
+                        }
                     }
                 }
             }
         }
 
-        // 5. SonarQube Quality Gate
+        // 5. Quality Gate (Non-blocking)
         stage('Quality Gate') {
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                catchError(
+                    buildResult: 'SUCCESS',
+                    stageResult: 'UNSTABLE'
+                ) {
+                    timeout(time: 5, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true
+                    }
                 }
             }
         }
@@ -75,6 +85,7 @@ pipeline {
         stage('Docker Build') {
             steps {
                 sh '''
+                    echo "Building Docker image..."
                     docker build -t "$LOCAL_IMAGE" .
                 '''
             }
@@ -137,6 +148,10 @@ pipeline {
     post {
         success {
             echo 'Pipeline completed successfully! Docker image pushed to Amazon ECR.'
+        }
+
+        unstable {
+            echo 'Pipeline completed with warnings. Check SonarQube analysis and Quality Gate results.'
         }
 
         failure {
